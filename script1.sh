@@ -1,9 +1,9 @@
 #!/bin/bash
 # ================================================
-# script1.sh - Funções de fetch, prepare, build, install
+# script1.sh - Funções de build (fetch/prepare/build/install)
 # ================================================
 
-. ./pkg.conf   # carrega variáveis globais
+. ./pkg.conf
 
 # Cores
 RED="\033[1;31m"
@@ -16,119 +16,116 @@ RESET="\033[0m"
 
 msg()     { echo -e "${CYAN}==>${RESET} $1"; }
 success() { echo -e "${GREEN}✔${RESET} $1"; }
-error()   { echo -e "${RED}✘${RESET} $1"; }
+error()   { echo -e "${RED}✘${RESET} $1"; exit 1; }
 warn()    { echo -e "${YELLOW}⚠${RESET} $1"; }
+
+# ------------------------------------------------
+# Localizar pacote no repositório
+# ------------------------------------------------
+find_pkg() {
+    local pkg="$1"
+    for repo in "${REPOS[@]}"; do
+        if [ -f "$REPO_DIR/$repo/$pkg/build.txt" ]; then
+            echo "$REPO_DIR/$repo/$pkg"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # ------------------------------------------------
 # Baixar fontes
 # ------------------------------------------------
-baixar() {
+fetch() {
     local pkg="$1"
-    source "$pkg/build.txt"
-
-    msg "Baixando fontes de ${MAGENTA}$name-$version${RESET}..."
+    local dir=$(find_pkg "$pkg") || error "Pacote $pkg não encontrado"
+    source "$dir/build.txt"
 
     mkdir -p "$SRC_DIR" "$BUILD_DIR/$name-$version"
-    cd "$SRC_DIR" || exit 1
+    cd "$SRC_DIR"
 
     for url in "${source[@]}"; do
-        msg "➡ ${BLUE}Download${RESET}: $url"
-        $DOWNLOADER "$url" >> "$LOG_DIR/$name-fetch.log" 2>&1 || {
-            error "Falha no download: $url"
-            exit 1
-        }
+        msg "Baixando $url"
+        $DOWNLOADER "$url" >> "$LOG_DIR/$name-fetch.log" 2>&1 || error "Falha no download $url"
     done
 
-    for file in "${source[@]##*/}"; do
-        msg "➡ ${BLUE}Extraindo${RESET}: $file"
-        tar xf "$file" -C "$BUILD_DIR" >> "$LOG_DIR/$name-fetch.log" 2>&1 || {
-            error "Falha ao extrair $file"
-            exit 1
-        }
+    # extrair para /tmp/build/$name
+    for url in "${source[@]}"; do
+        file=$(basename "$url")
+        msg "Extraindo $file"
+        tar xf "$file" -C "$BUILD_DIR" >> "$LOG_DIR/$name-fetch.log" 2>&1
     done
 
-    success "Fontes prontos em $BUILD_DIR/$name-$version"
+    success "Sources de $name baixados e extraídos"
 }
 
 # ------------------------------------------------
-# Aplicar patches
+# Aplicar patches (prepare)
 # ------------------------------------------------
 prepare() {
     local pkg="$1"
-    source "$pkg/build.txt"
+    local dir=$(find_pkg "$pkg") || error "Pacote $pkg não encontrado"
+    source "$dir/build.txt"
 
-    cd "$BUILD_DIR/$name-$version" || exit 1
+    cd "$BUILD_DIR/$name-$version"
 
-    if [ "${#patches[@]}" -gt 0 ]; then
-        msg "Aplicando patches..."
-        for patch in "${patches[@]}"; do
-            msg "➡ ${BLUE}Patch${RESET}: $patch"
-            patch -p1 < "$pkg/$patch" >> "$LOG_DIR/$name-prepare.log" 2>&1 || {
-                error "Erro aplicando patch $patch"
-                exit 1
-            }
+    if [ -d "$dir/patches" ]; then
+        for patch in "$dir"/patches/*.patch; do
+            [ -f "$patch" ] || continue
+            msg "Aplicando patch $(basename "$patch")"
+            patch -p1 < "$patch" >> "$LOG_DIR/$name-prepare.log" 2>&1 || error "Erro ao aplicar patch"
         done
-        success "Patches aplicados"
-    else
-        warn "Nenhum patch definido"
     fi
+
+    success "Patches aplicados em $name"
 }
 
 # ------------------------------------------------
-# Compilar
+# Build
 # ------------------------------------------------
 build() {
     local pkg="$1"
-    source "$pkg/build.txt"
+    local dir=$(find_pkg "$pkg") || error "Pacote $pkg não encontrado"
+    source "$dir/build.txt"
 
-    msg "Compilando ${MAGENTA}$name-$version${RESET}..."
-    cd "$BUILD_DIR/$name-$version" || exit 1
+    cd "$BUILD_DIR/$name-$version"
 
-    if declare -f build >/dev/null; then
-        build >> "$LOG_DIR/$name-build.log" 2>&1 || {
-            error "Erro na compilação (veja $LOG_DIR/$name-build.log)"
-            exit 1
-        }
-    else
-        warn "Nenhuma função build() definida em build.txt"
-    fi
+    msg "Compilando $name-$version"
+    build >> "$LOG_DIR/$name-build.log" 2>&1 || error "Falha no build de $name"
 
-    success "Build concluído"
+    success "Build de $name-$version concluído"
 }
 
 # ------------------------------------------------
-# Instalar no fakeroot
+# Install
 # ------------------------------------------------
 install() {
     local pkg="$1"
-    source "$pkg/build.txt"
+    local dir=$(find_pkg "$pkg") || error "Pacote $pkg não encontrado"
+    source "$dir/build.txt"
 
-    msg "Instalando ${MAGENTA}$name-$version${RESET} no fakeroot..."
-    cd "$BUILD_DIR/$name-$version" || exit 1
+    cd "$BUILD_DIR/$name-$version"
 
-    local DEST="$PKG_DIR/$name"
-    mkdir -p "$DEST"
+    msg "Instalando $name-$version em fakeroot"
+    install >> "$LOG_DIR/$name-install.log" 2>&1 || error "Falha na instalação"
 
-    if declare -f install >/dev/null; then
-        install >> "$LOG_DIR/$name-install.log" 2>&1 || {
-            error "Erro na instalação (veja $LOG_DIR/$name-install.log)"
-            exit 1
-        }
-    else
-        warn "Nenhuma função install() definida em build.txt, rodando padrão..."
-        make DESTDIR="$DEST" install >> "$LOG_DIR/$name-install.log" 2>&1 || exit 1
-    fi
+    # salvar lista de arquivos instalados
+    mkdir -p "$DB_DIR/$name"
+    find "$PKG_DIR" -type f | sed "s|$PKG_DIR||" > "$DB_DIR/$name/files.lst"
 
-    success "Instalado no fakeroot: $DEST"
+    # copiar para o sistema real
+    cp -a "$PKG_DIR"/* "$ROOT_DIR" >> "$LOG_DIR/$name-install.log" 2>&1
+
+    success "$name-$version instalado no sistema"
 }
 
 # ------------------------------------------------
 # Entrada
 # ------------------------------------------------
 case "$1" in
-    baixar) baixar "$2" ;;
+    fetch) fetch "$2" ;;
     prepare) prepare "$2" ;;
     build) build "$2" ;;
     install) install "$2" ;;
-    *) echo -e "${BLUE}Uso:${RESET} $0 {baixar|prepare|build|install} <pacote>" ;;
+    *) echo -e "${BLUE}Uso:${RESET} $0 {fetch|prepare|build|install} pacote" ;;
 esac
