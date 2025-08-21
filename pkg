@@ -1,51 +1,87 @@
 #!/bin/bash
-# ============================================================
-# pkg - Frontend do gerenciador de pacotes
-# ============================================================
+# ================================================
+# pkg - wrapper do gerenciador
+# ================================================
 
-CONF_FILE="/etc/pkg.conf"
-SCRIPT1="/usr/lib/pkg/script1.sh"
-SCRIPT2="/usr/lib/pkg/script2.sh"
+. ./pkg.conf
+. ./script1.sh
+. ./script2.sh
 
-# Carregar configuração
-[ -f "$CONF_FILE" ] && source "$CONF_FILE"
+# Cores
+RED="\033[1;31m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+BLUE="\033[1;34m"
+MAGENTA="\033[1;35m"
+CYAN="\033[1;36m"
+RESET="\033[0m"
 
-usage() {
-    echo "Uso: pkg <comando> [pacote]"
-    echo
-    echo "Comandos disponíveis:"
-    echo "  install <pacote>   → baixa, prepara, compila e instala"
-    echo "  remove <nome> <versao> → remove pacote instalado"
-    echo "  revdep             → verifica dependências quebradas"
-    echo "  deps <pacote>      → resolve dependências recursivas"
-    echo "  build <pacote>     → compila sem instalar"
-    echo "  prepare <pacote>   → aplica patches antes do build"
-    echo
-    echo "Exemplo: pkg install autoconf"
-    exit 1
+msg() {
+    echo -e "${CYAN}==>${RESET} $1"
 }
-
-install_pkg() {
-    pkg=$1
-    if [ -z "$pkg" ]; then
-        echo "❌ Especifique o pacote. Ex: pkg install autoconf"
-        exit 1
-    fi
-
-    echo "📦 Instalando $pkg..."
-    "$SCRIPT1" baixar   "$pkg" || exit 1
-    "$SCRIPT1" prepare  "$pkg" || exit 1
-    "$SCRIPT1" build    "$pkg" || exit 1
-    "$SCRIPT1" install  "$pkg" || exit 1
-    echo "✅ $pkg instalado com sucesso!"
+success() {
+    echo -e "${GREEN}✔${RESET} $1"
+}
+error() {
+    echo -e "${RED}✘${RESET} $1"
+}
+warn() {
+    echo -e "${YELLOW}⚠${RESET} $1"
 }
 
 case "$1" in
-    install) install_pkg "$2" ;;
-    remove)  shift; "$SCRIPT2" remover "$@" ;;
-    revdep)  "$SCRIPT2" revdep ;;
-    deps)    "$SCRIPT2" deps "$2" ;;
-    build)   "$SCRIPT1" build "$2" ;;
-    prepare) "$SCRIPT1" prepare "$2" ;;
-    *) usage ;;
+    build)
+        pkg="$2"
+        msg "Iniciando build de ${MAGENTA}$pkg${RESET}..."
+        baixar "$pkg" && prepare "$pkg" && build "$pkg"
+        if [ $? -eq 0 ]; then
+            success "Build completo. Logs: ${YELLOW}$LOG_DIR/${pkg}-*.log${RESET}"
+        else
+            error "Falha no build de $pkg"
+        fi
+        ;;
+    install)
+        pkg="$2"
+        msg "Instalando ${MAGENTA}$pkg${RESET}..."
+        baixar "$pkg" && prepare "$pkg" && build "$pkg" && install "$pkg"
+        if [ $? -eq 0 ]; then
+            success "Instalação concluída em fakeroot. Agora copiando para ${BLUE}/ ...${RESET}"
+
+            # Copiar do fakeroot para /
+            name=$(source "$pkg/build.txt"; echo "$name")
+            fakeroot_dir="$PKG_DIR/$name"
+            manifest="$DB_DIR/${name}/files.lst"
+
+            mkdir -p "$DB_DIR/$name"
+            find "$fakeroot_dir" -type f | sed "s|$fakeroot_dir||" > "$manifest"
+
+            cp -a "$fakeroot_dir"/* "$ROOT_DIR" || {
+                error "Falha ao copiar arquivos para o sistema"
+                exit 1
+            }
+
+            success "Pacote $pkg instalado com sucesso!"
+            msg "Arquivos listados em: ${YELLOW}$manifest${RESET}"
+            msg "Logs: ${YELLOW}$LOG_DIR/${pkg}-*.log${RESET}"
+        else
+            error "Falha na instalação de $pkg"
+        fi
+        ;;
+    remove)
+        pkg="$2"
+        msg "Removendo ${MAGENTA}$pkg${RESET}..."
+        remover "$pkg"
+        ;;
+    revdep)
+        msg "Rodando verificação de dependências..."
+        revdep
+        ;;
+    depsolve)
+        pkg="$2"
+        msg "Resolvendo dependências para ${MAGENTA}$pkg${RESET}..."
+        depsolve "$pkg"
+        ;;
+    *)
+        echo -e "${BLUE}Uso:${RESET} pkg {build|install|remove|revdep|depsolve} <pacote>"
+        ;;
 esac
