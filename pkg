@@ -1,0 +1,51 @@
+#!/bin/bash
+# ============================================================
+# pkg - Frontend do gerenciador de pacotes
+# ============================================================
+
+CONF_FILE="/etc/pkg.conf"
+SCRIPT1="/usr/lib/pkg/script1.sh"
+SCRIPT2="/usr/lib/pkg/script2.sh"
+
+# Carregar configuração
+[ -f "$CONF_FILE" ] && source "$CONF_FILE"
+
+usage() {
+    echo "Uso: pkg <comando> [pacote]"
+    echo
+    echo "Comandos disponíveis:"
+    echo "  install <pacote>   → baixa, prepara, compila e instala"
+    echo "  remove <nome> <versao> → remove pacote instalado"
+    echo "  revdep             → verifica dependências quebradas"
+    echo "  deps <pacote>      → resolve dependências recursivas"
+    echo "  build <pacote>     → compila sem instalar"
+    echo "  prepare <pacote>   → aplica patches antes do build"
+    echo
+    echo "Exemplo: pkg install autoconf"
+    exit 1
+}
+
+install_pkg() {
+    pkg=$1
+    if [ -z "$pkg" ]; then
+        echo "❌ Especifique o pacote. Ex: pkg install autoconf"
+        exit 1
+    fi
+
+    echo "📦 Instalando $pkg..."
+    "$SCRIPT1" baixar   "$pkg" || exit 1
+    "$SCRIPT1" prepare  "$pkg" || exit 1
+    "$SCRIPT1" build    "$pkg" || exit 1
+    "$SCRIPT1" install  "$pkg" || exit 1
+    echo "✅ $pkg instalado com sucesso!"
+}
+
+case "$1" in
+    install) install_pkg "$2" ;;
+    remove)  shift; "$SCRIPT2" remover "$@" ;;
+    revdep)  "$SCRIPT2" revdep ;;
+    deps)    "$SCRIPT2" deps "$2" ;;
+    build)   "$SCRIPT1" build "$2" ;;
+    prepare) "$SCRIPT1" prepare "$2" ;;
+    *) usage ;;
+esac
