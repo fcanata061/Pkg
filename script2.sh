@@ -1,6 +1,6 @@
 #!/bin/bash
 # ================================================
-# script2.sh - Funções de remoção e manutenção
+# script2.sh - Funções de manutenção (remover/revdep/depsolve)
 # ================================================
 
 . ./pkg.conf
@@ -16,8 +16,22 @@ RESET="\033[0m"
 
 msg()     { echo -e "${CYAN}==>${RESET} $1"; }
 success() { echo -e "${GREEN}✔${RESET} $1"; }
-error()   { echo -e "${RED}✘${RESET} $1"; }
+error()   { echo -e "${RED}✘${RESET} $1"; exit 1; }
 warn()    { echo -e "${YELLOW}⚠${RESET} $1"; }
+
+# ------------------------------------------------
+# Localizar pacote no repositório
+# ------------------------------------------------
+find_pkg() {
+    local pkg="$1"
+    for repo in "${REPOS[@]}"; do
+        if [ -f "$REPO_DIR/$repo/$pkg/build.txt" ]; then
+            echo "$REPO_DIR/$repo/$pkg"
+            return 0
+        fi
+    done
+    return 1
+}
 
 # ------------------------------------------------
 # Remover pacote
@@ -28,14 +42,11 @@ remover() {
 
     if [ ! -f "$manifest" ]; then
         error "Pacote $pkg não está instalado"
-        exit 1
     fi
 
-    msg "Removendo arquivos listados em ${YELLOW}$manifest${RESET}..."
+    msg "Removendo arquivos de $pkg"
     while read -r file; do
-        if [ -f "$ROOT_DIR/$file" ]; then
-            rm -f "$ROOT_DIR/$file" >> "$LOG_DIR/$pkg-remove.log" 2>&1
-        fi
+        rm -f "$ROOT_DIR/$file" >> "$LOG_DIR/$pkg-remove.log" 2>&1
     done < "$manifest"
 
     rm -rf "$DB_DIR/$pkg"
@@ -72,22 +83,19 @@ revdep() {
 # ------------------------------------------------
 depsolve() {
     local pkg="$1"
-    source "$pkg/build.txt"
+    local dir=$(find_pkg "$pkg") || error "Pacote $pkg não encontrado"
+    source "$dir/build.txt"
 
     if [ "${#depends[@]}" -eq 0 ]; then
         warn "Nenhuma dependência declarada para $pkg"
         return 0
     fi
 
-    msg "Resolvendo dependências para ${MAGENTA}$pkg${RESET}..."
-
+    msg "Resolvendo dependências para $pkg..."
     for dep in "${depends[@]}"; do
         if [ ! -d "$DB_DIR/$dep" ]; then
             warn "Dependência faltando: $dep → Instalando..."
-            ./pkg install "$dep" || {
-                error "Falha ao instalar dependência $dep"
-                exit 1
-            }
+            ./pkg install "$dep" || error "Falha ao instalar dependência $dep"
         else
             success "Dependência já instalada: $dep"
         fi
