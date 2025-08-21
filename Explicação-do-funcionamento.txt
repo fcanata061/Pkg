@@ -1,0 +1,221 @@
+========================
+EXPLICAÇÃO DETALHADA DO PKG
+========================
+
+O sistema de scripts que você está montando é um **gerenciador de pacotes simples**, escrito em Bash, que organiza o ciclo completo de vida de um pacote: buscar, preparar, compilar, instalar, atualizar e gerenciar dependências.  
+A seguir está a explicação detalhada, por módulos e comandos, para você consultar sempre que precisar.
+
+---------------------------------
+1. Estrutura Geral
+---------------------------------
+- **pkg.conf** → arquivo de configuração global. Define variáveis como:
+  - REPOS → lista de repositórios.
+  - REPO_DIR → onde ficam os pacotes.
+  - SRC_DIR → onde ficam os fontes baixados.
+  - BUILD_DIR → onde o código-fonte é extraído e compilado.
+  - PKG_DIR → onde é criado o fakeroot para instalação temporária.
+  - ROOT_DIR → raiz final do sistema (instalação real).
+  - DB_DIR → banco de dados de pacotes em texto.
+  - SQLITE_DB → banco de pacotes no formato SQLite.
+  - LOG_DIR → logs detalhados por pacote.
+  - CHECKSUMS → "on/off" para ativar ou não verificação SHA256.
+  - PKG_JOBS → número de jobs paralelos.
+  - Ícones e cores para saída colorida.
+
+- **script1.sh** → contém funções centrais:
+  - pkg_fetch
+  - pkg_prepare
+  - pkg_build
+  - pkg_install
+  - suporte a hooks
+  - suporte a patches
+  - spinner/progress
+  - integração com SQLite
+
+- **pkg** → comando principal do usuário.  
+  Aceita subcomandos como:
+  - pkg fetch
+  - pkg prepare
+  - pkg build
+  - pkg install
+  - pkg sync
+  - pkg upgrade
+  - pkg world
+  - pkg revdep
+  - pkg search
+  - pkg info
+  - pkg clean
+  - pkg check
+  - pkg chroot
+  (Todos mapeiam para funções do script1.sh)
+
+- **revdep.sh** → script para revisar dependências e corrigir órfãos.
+
+- **build.txt** → arquivo de definição de cada pacote.  
+  Contém:
+  - name, version, release
+  - source (urls)
+  - sha256sums (checksums)
+  - depends (dependências)
+  - patches (lista opcional)
+  - funções build() e install()
+  - pode definir hooks como pre_build, post_build, pre_install, post_install
+
+
+---------------------------------
+2. Fluxo do Ciclo de Pacote
+---------------------------------
+
+(1) **Fetch**
+- Baixa as fontes declaradas em `source=()`.
+- Armazena em SRC_DIR.
+- Verifica SHA256 se `CHECKSUMS=on`.
+- Extrai para o BUILD_DIR.
+
+(2) **Prepare**
+- Localiza o diretório fonte (name-version).
+- Aplica patches listados em `patches=()` dentro do build.txt.
+- Aplica também patches encontrados no diretório `patches/`.
+- Executa hook `pre_build` se existir.
+
+(3) **Build**
+- Executa a função `build()` definida no build.txt.
+- Usa spinner para mostrar progresso.
+- Executa hook `post_build`.
+
+(4) **Install**
+- Prepara um fakeroot no PKG_DIR.
+- Executa a função `install()` ou `make install`.
+- Copia tudo para ROOT_DIR.
+- Gera manifesto de arquivos e grava em DB_DIR.
+- Registra no banco SQLite (pacotes, arquivos, dependências).
+- Executa hooks `pre_install` e `post_install`.
+
+---------------------------------
+3. Gerenciamento de Pacotes
+---------------------------------
+
+- **Banco de Dados SQLite**
+  - Tabelas:
+    - packages (nome, versão, release, data)
+    - files (lista de arquivos por pacote)
+    - deps (dependências entre pacotes)
+  - Mantém coerência entre pacotes e arquivos instalados.
+
+- **Banco de Dados Texto**
+  - DB_DIR/<pkg>/files.lst → lista de arquivos
+  - DB_DIR/<pkg>/installed → versão instalada
+  - Compatibilidade com ferramentas simples.
+
+- **Checksum**
+  - Se ativo, cada arquivo baixado é verificado via sha256sum.
+  - Se falhar, aborta.
+
+- **Logs**
+  - Cada fase gera um log separado no LOG_DIR.
+  - Nome: <pkg>-<fase>.log
+
+---------------------------------
+4. Comandos do Usuário (via `pkg`)
+---------------------------------
+
+- **pkg fetch <pkg>**  
+  Baixa e extrai o código-fonte.
+
+- **pkg prepare <pkg>**  
+  Aplica patches e hooks de preparação.
+
+- **pkg build <pkg>**  
+  Compila o pacote com build().
+
+- **pkg install <pkg> [--force]**  
+  Instala o pacote, registra no DB e SQLite.  
+  Se `--force`, reinstala mesmo presente.
+
+- **pkg sync**  
+  Sincroniza repositórios locais com git.
+
+- **pkg upgrade**  
+  Recompila e reinstala pacotes que tenham versão mais nova.
+
+- **pkg revdep**  
+  Verifica pacotes órfãos ou com dependências quebradas e tenta corrigir.
+
+- **pkg world**  
+  Recompila todo o sistema respeitando a ordem das dependências.
+
+- **pkg search <pattern>**  
+  Pesquisa pacotes disponíveis nos repositórios.
+
+- **pkg info <pkg>**  
+  Mostra informações detalhadas (versão, dependências, arquivos).
+
+- **pkg clean**  
+  Remove fontes e builds antigos.
+
+- **pkg check**  
+  Verifica integridade de pacotes instalados (checksums, arquivos faltando).
+
+- **pkg chroot <dir>**  
+  Executa ambiente chroot com ROOT_DIR.
+
+---------------------------------
+5. Hooks
+---------------------------------
+Hooks são pontos de extensão. Podem existir em:
+- Definidos no build.txt como função (ex: pre_build()).
+- Arquivos executáveis em pkg/hooks/ (específicos do pacote).
+- Arquivos executáveis em GLOBAL_HOOKS_DIR/ (globais).
+
+Fases possíveis:
+- pre_build
+- post_build
+- pre_install
+- post_install
+- (podem ser estendidos para outras fases)
+
+---------------------------------
+6. Patches
+---------------------------------
+- Declarados em `patches=()` dentro do build.txt.
+- Ou colocados em `pkg/patches/*.patch`.
+- São aplicados automaticamente na fase `pkg_prepare`.
+
+---------------------------------
+7. Recursos Avançados
+---------------------------------
+- Coloração avançada na saída (info, warn, error, success).
+- Spinner progress bar durante operações longas.
+- Paralelismo no fetch com PKG_JOBS.
+- Gerenciamento de órfãos (via revdep).
+- Logs detalhados por pacote.
+- Integração dupla de banco de dados (texto + SQLite).
+- Configuração de checksums com chave `CHECKSUMS=on/off`.
+
+---------------------------------
+8. Fluxo Completo de um Pacote
+---------------------------------
+Exemplo de ciclo para o pacote "nano":
+
+1. pkg fetch nano
+   - baixa o tarball, verifica sha256, extrai.
+2. pkg prepare nano
+   - aplica patches, roda pre_build.
+3. pkg build nano
+   - compila o código-fonte.
+4. pkg install nano
+   - instala no sistema, registra no DB, roda post_install.
+
+---------------------------------
+RESUMO
+---------------------------------
+Este sistema é inspirado em gerenciadores como pkgsrc, ports, Arch Build System e Gentoo, mas em versão reduzida.  
+Ele provê:
+- Reprodutibilidade (checksums).
+- Organização (logs, DB, sqlite).
+- Extensibilidade (hooks).
+- Automação (scripts pkg e revdep).
+- Segurança mínima (SHA256).
+- Conforto (spinner, coloração, paralelismo).
+
+É uma base sólida para evoluir em direção a um gerenciador de pacotes completo.
