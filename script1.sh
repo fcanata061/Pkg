@@ -1,130 +1,107 @@
 #!/bin/bash
-# ============================================================
-# script1.sh - Script estilo PKGBUILD simplificado
-# ============================================================
+# ================================================
+# script1.sh - responsável por baixar, preparar,
+# compilar e instalar em fakeroot
+# ================================================
 
-SRC_DIR="/var/db/pkg/sources"
-BUILD_DIR="/tmp"
-PKG_DIR="/tmp/pkg"
-DB_DIR="/var/db/pkg"
-INSTRUCOES="build.txt"
+. ./pkg.conf
 
-# ------------------------------------------------------------
-# Carregar instruções
-# ------------------------------------------------------------
-carregar_instrucoes() {
-    if [ ! -f "$INSTRUCOES" ]; then
-        echo "❌ Arquivo '$INSTRUCOES' não encontrado!"
-        exit 1
-    fi
-    source "$INSTRUCOES"   # carrega name, version, release, source(), funções prepare, build, install
-}
+# Baixar fontes e extrair
+baixar() {
+    local pkg="$1"
+    source "$pkg/build.txt"
 
-# ------------------------------------------------------------
-# Baixar sources
-# ------------------------------------------------------------
-baixar_sources() {
-    carregar_instrucoes
-    mkdir -p "$SRC_DIR" "$BUILD_DIR"
+    mkdir -p "$SRC_DIR/$name" "$BUILD_DIR"
 
+    echo "🌐 Baixando fontes de $name-$version..."
     for url in "${source[@]}"; do
-        arquivo="$SRC_DIR/$(basename "$url")"
-        echo "🔽 Baixando $url..."
-        if [[ "$url" =~ \.git$ ]]; then
-            git clone "$url" "$BUILD_DIR/$name-$version"
-        elif command -v wget >/dev/null 2>&1; then
-            wget -c "$url" -O "$arquivo"
-        elif command -v curl >/dev/null 2>&1; then
-            curl -L "$url" -o "$arquivo"
-        else
-            echo "❌ Nem wget, curl ou git disponíveis!"
-            exit 1
+        file=$(basename "$url")
+        dest="$SRC_DIR/$name/$file"
+        if [ ! -f "$dest" ]; then
+            if command -v wget >/dev/null; then
+                wget -O "$dest" "$url"
+            elif command -v curl >/dev/null; then
+                curl -L -o "$dest" "$url"
+            else
+                echo "❌ Nenhum downloader disponível (wget/curl)"
+                exit 1
+            fi
         fi
 
-        # Extrair tarballs
-        if [[ "$arquivo" =~ \.tar\.(gz|xz|bz2|bz)$ ]]; then
-            echo "📦 Extraindo $arquivo em $BUILD_DIR..."
-            tar -xf "$arquivo" -C "$BUILD_DIR"
-        fi
+        echo "📦 Extraindo $file..."
+        tar -xf "$dest" -C "$BUILD_DIR"
     done
 }
 
-# ------------------------------------------------------------
-# Preparar source (patches, ajustes)
-# ------------------------------------------------------------
-prepare_source() {
-    carregar_instrucoes
-    WORKDIR="$BUILD_DIR/$name-$version"
-    [ ! -d "$WORKDIR" ] && { echo "❌ Diretório $WORKDIR não encontrado!"; exit 1; }
-    cd "$WORKDIR" || exit 1
+# Aplicar patches
+prepare() {
+    local pkg="$1"
+    source "$pkg/build.txt"
 
-    if declare -f prepare >/dev/null; then
-        echo "🛠 Rodando prepare()..."
-        prepare
-    else
-        echo "ℹ️ Nenhuma função prepare() definida, pulando."
+    cd "$BUILD_DIR/$name-$version" || exit 1
+
+    if [ -n "${patches[*]}" ]; then
+        for patch in "${patches[@]}"; do
+            local patch_file="$SRC_DIR/$name/$patch"
+            if [ -f "$patch_file" ]; then
+                if ! grep -q "Applied-$patch" ".patches-applied" 2>/dev/null; then
+                    echo "📌 Aplicando patch: $patch"
+                    patch -p1 < "$patch_file" || exit 1
+                    echo "Applied-$patch" >> .patches-applied
+                else
+                    echo "✔ Patch $patch já aplicado."
+                fi
+            fi
+        done
     fi
 }
 
-# ------------------------------------------------------------
-# Compilar programa
-# ------------------------------------------------------------
-compilar_programa() {
-    carregar_instrucoes
-    WORKDIR="$BUILD_DIR/$name-$version"
-    [ ! -d "$WORKDIR" ] && { echo "❌ Diretório $WORKDIR não encontrado!"; exit 1; }
-    cd "$WORKDIR" || exit 1
+# Compilar
+build() {
+    local pkg="$1"
+    source "$pkg/build.txt"
 
-    echo "🔧 Compilando $name-$version..."
-    build
+    echo "⚙️ Compilando $name-$version..."
+    cd "$BUILD_DIR/$name-$version" || exit 1
+
+    # Aplicar patches automaticamente (garantia extra)
+    prepare "$pkg"
+
+    build || {
+        echo "❌ Erro durante compilação de $name"
+        exit 1
+    }
 }
 
-# ------------------------------------------------------------
-# Instalar programa + registrar arquivos
-# ------------------------------------------------------------
-instalar_programa() {
-    carregar_instrucoes
-    WORKDIR="$BUILD_DIR/$name-$version"
-    PKG="$PKG_DIR/$name-$version"
-    METADIR="$DB_DIR/$name-$version"
+# Instalar em fakeroot
+install() {
+    local pkg="$1"
+    source "$pkg/build.txt"
 
-    mkdir -p "$PKG" "$METADIR"
-    cd "$WORKDIR" || exit 1
+    echo "📂 Instalando $name-$version no fakeroot..."
+
+    cd "$BUILD_DIR/$name-$version" || exit 1
+
+    local DEST="$PKG_DIR/$name"
+    mkdir -p "$DEST"
 
     if declare -f install >/dev/null; then
-        echo "📦 Instalando em $PKG..."
-        install
+        install || {
+            echo "❌ Erro na instalação em fakeroot"
+            exit 1
+        }
     else
-        echo "ℹ️ Nenhuma função install() definida, pulando."
+        echo "⚠ Nenhuma função install() em build.txt, usando padrão..."
+        make DESTDIR="$DEST" install || exit 1
     fi
 
-    echo "📝 Registrando metadados em $METADIR..."
-
-    # Lista de arquivos instalados
-    find "$PKG" -type f | sed "s|$PKG||" > "$METADIR/files.list"
-
-    # Dependências (se declaradas no build.txt)
-    if [ -n "${depends[*]}" ]; then
-        printf "%s\n" "${depends[@]}" > "$METADIR/deps.list"
-    fi
-
-    # Info do pacote
-    {
-        echo "name=$name"
-        echo "version=$version"
-        echo "release=$release"
-    } > "$METADIR/meta.info"
-
-    echo "✅ Instalação registrada em $METADIR"
+    echo "✅ Instalado no fakeroot: $DEST"
 }
 
-# ------------------------------------------------------------
-# Execução
-# ------------------------------------------------------------
 case "$1" in
-    baixar)   baixar_sources ;;
-    prepare)  prepare_source ;;
-    build)    compilar_programa ;;
-    install)  instalar_programa ;;
-    *) echo "Uso: $0 {baixar|prepare|build|install}" ;;
+    baixar)  baixar "$2" ;;
+    prepare) prepare "$2" ;;
+    build)   build "$2" ;;
+    install) install "$2" ;;
+    *) echo "Uso: $0 {baixar|prepare|build|install} <pacote>" ;;
 esac
