@@ -1,98 +1,105 @@
 #!/bin/bash
-# ============================================================
-# script2.sh - Gerenciador avançado (remoção + dependências)
-# ============================================================
+# ================================================
+# script2.sh - Funções de remoção e manutenção
+# ================================================
 
-PKG_DB="/var/db/pkg"
-PKG_DIR="/tmp/pkg"
+. ./pkg.conf
 
-# ------------------------------------------------------------
-# Função: Remover programa
-# ------------------------------------------------------------
+# Cores
+RED="\033[1;31m"
+GREEN="\033[1;32m"
+YELLOW="\033[1;33m"
+BLUE="\033[1;34m"
+MAGENTA="\033[1;35m"
+CYAN="\033[1;36m"
+RESET="\033[0m"
+
+msg()     { echo -e "${CYAN}==>${RESET} $1"; }
+success() { echo -e "${GREEN}✔${RESET} $1"; }
+error()   { echo -e "${RED}✘${RESET} $1"; }
+warn()    { echo -e "${YELLOW}⚠${RESET} $1"; }
+
+# ------------------------------------------------
+# Remover pacote
+# ------------------------------------------------
 remover() {
-    nome=$1
-    versao=$2
+    local pkg="$1"
+    local manifest="$DB_DIR/$pkg/files.lst"
 
-    if [ -z "$nome" ] || [ -z "$versao" ]; then
-        echo "⚠️ Uso: $0 remover <nome> <versão>"
+    if [ ! -f "$manifest" ]; then
+        error "Pacote $pkg não está instalado"
         exit 1
     fi
 
-    METADIR="$PKG_DB/$nome-$versao"
-    if [ ! -d "$METADIR" ]; then
-        echo "❌ Pacote $nome-$versao não registrado em $PKG_DB"
-        exit 1
-    fi
-
-    echo "🗑 Removendo $nome-$versao..."
-    while IFS= read -r arquivo; do
-        if [ -e "$arquivo" ]; then
-            sudo rm -rf "$arquivo"
-            echo "➡ Apagado: $arquivo"
+    msg "Removendo arquivos listados em ${YELLOW}$manifest${RESET}..."
+    while read -r file; do
+        if [ -f "$ROOT_DIR/$file" ]; then
+            rm -f "$ROOT_DIR/$file" >> "$LOG_DIR/$pkg-remove.log" 2>&1
         fi
-    done < "$METADIR/files.list"
+    done < "$manifest"
 
-    echo "🧹 Limpando metadados..."
-    sudo rm -rf "$METADIR"
-
-    echo "✅ $nome-$versao removido com sucesso!"
+    rm -rf "$DB_DIR/$pkg"
+    success "Pacote $pkg removido"
 }
 
-# ------------------------------------------------------------
-# Função: Verificar dependências quebradas
-# ------------------------------------------------------------
+# ------------------------------------------------
+# Verificação de dependências quebradas
+# ------------------------------------------------
 revdep() {
-    echo "🔍 Verificando dependências de binários e bibliotecas..."
-    for bin in $(find /usr/bin /usr/lib -type f 2>/dev/null); do
-        if file "$bin" | grep -q ELF; then
-            faltando=$(ldd "$bin" 2>/dev/null | grep "not found")
-            if [ -n "$faltando" ]; then
-                echo "⚠️ Binário $bin com dependências ausentes:"
-                echo "$faltando"
+    msg "Verificando bibliotecas quebradas..."
+    local broken=0
+
+    for bin in $(find "$PREFIX/bin" "$PREFIX/lib" -type f 2>/dev/null); do
+        if file "$bin" | grep -q "ELF"; then
+            missing=$(ldd "$bin" 2>/dev/null | grep "not found")
+            if [ -n "$missing" ]; then
+                warn "Dependência faltando em: $bin"
+                echo "$missing" >> "$LOG_DIR/revdep.log"
+                broken=1
             fi
         fi
     done
-    echo "✅ Verificação concluída!"
+
+    if [ $broken -eq 0 ]; then
+        success "Nenhuma dependência quebrada encontrada"
+    else
+        error "Dependências quebradas detectadas. Veja: $LOG_DIR/revdep.log"
+    fi
 }
 
-# ------------------------------------------------------------
-# Função: Resolver dependências recursivas
-# ------------------------------------------------------------
-resolver_dependencias() {
-    pacote=$1
-    if [ -z "$pacote" ]; then
-        echo "⚠️ Uso: $0 deps <pacote>"
-        exit 1
+# ------------------------------------------------
+# Resolver dependências recursivamente
+# ------------------------------------------------
+depsolve() {
+    local pkg="$1"
+    source "$pkg/build.txt"
+
+    if [ "${#depends[@]}" -eq 0 ]; then
+        warn "Nenhuma dependência declarada para $pkg"
+        return 0
     fi
 
-    echo "🔗 Resolvendo dependências para $pacote..."
+    msg "Resolvendo dependências para ${MAGENTA}$pkg${RESET}..."
 
-    METADIR="$PKG_DB/$pacote"
-    if [ ! -f "$METADIR/deps.list" ]; then
-        echo "ℹ️ Nenhuma dependência registrada para $pacote"
-        return
-    fi
-
-    while IFS= read -r dep; do
-        echo "➡ Dependência encontrada: $dep"
-        if [ ! -d "$PKG_DB/$dep" ]; then
-            echo "📦 Instalando dependência faltante: $dep"
-            # Aqui chamaria o script1.sh automaticamente
-            ./script1.sh baixar "$dep"
-            ./script1.sh prepare "$dep"
-            ./script1.sh build "$dep"
-            ./script1.sh install "$dep"
+    for dep in "${depends[@]}"; do
+        if [ ! -d "$DB_DIR/$dep" ]; then
+            warn "Dependência faltando: $dep → Instalando..."
+            ./pkg install "$dep" || {
+                error "Falha ao instalar dependência $dep"
+                exit 1
+            }
+        else
+            success "Dependência já instalada: $dep"
         fi
-        resolver_dependencias "$dep"
-    done < "$METADIR/deps.list"
+    done
 }
 
-# ------------------------------------------------------------
-# Execução
-# ------------------------------------------------------------
+# ------------------------------------------------
+# Entrada
+# ------------------------------------------------
 case "$1" in
-    remover) remover "$2" "$3" ;;
+    remover) remover "$2" ;;
     revdep) revdep ;;
-    deps) resolver_dependencias "$2" ;;
-    *) echo "Uso: $0 {remover <nome> <versão>|revdep|deps <pacote>}" ;;
+    depsolve) depsolve "$2" ;;
+    *) echo -e "${BLUE}Uso:${RESET} $0 {remover|revdep|depsolve} [pacote]" ;;
 esac
